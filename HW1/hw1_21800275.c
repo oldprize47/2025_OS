@@ -11,7 +11,6 @@
 
 int main(int argc, char *argv[])
 {
-	// char write_msg[BUFFER_SIZE] = "HIHIHI";
 	char read_msg[BUFFER_SIZE];
 	pid_t pid;
 	int ret;
