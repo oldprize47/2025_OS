@@ -1,13 +1,3 @@
-/**
- * Example program demonstrating UNIX pipes.
- *
- * Figures 3.21 & 3.22
- *
- * @author Silberschatz, Galvin, and Gagne
- * Operating System Concepts  - Tenth Edition
- * Copyright John Wiley & Sons - 2018
- */
-
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/types.h>
