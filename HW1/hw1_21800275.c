@@ -20,18 +20,20 @@ int main(int argc, char *argv[]) {
     int count = 0;
     int max_strlen = 0;
     int num = 0;
-    int chr_flag = 0;
+    int flex_mode = 0;
 
-    // 알규먼트 갯수 확인
+    // Check argument count
     if (argc < 3) {
-        fprintf(stderr, "usage: cpu <string>\n");
+        fprintf(stderr, "Usage: cpu <command> <search_word> [-f]\n");
         exit(1);
     }
 
-    if (argc >= 4 && toupper(argv[3][0]) == 'T') chr_flag = 1;  // for creative service
+    // Parse flexible mode flag (-f or -F)
+    if (argc >= 4 && argv[3][0] == '-' && toupper(argv[3][1]) == 'F' && argv[3][2] == '\0')
+        flex_mode = 1;
 
-    // 메모리 할당을 위한 <command>라인의 문자열 크기 측정
-    while (*ptr != 0) {
+    // Calculate max token length for memory allocation
+    while (*ptr != '\0') {
         if (*ptr == ' ') {
             count++;
             if (num > max_strlen) max_strlen = num;
@@ -43,132 +45,141 @@ int main(int argc, char *argv[]) {
     }
     if (num > max_strlen) max_strlen = num;
 
-    // 메모리 동적 할당당
-    new_argv = (char **)malloc(sizeof(char *) * (count + 2));
-    for (int i = 0; i <= count; i++) *(new_argv + i) = (char *)malloc(sizeof(char) * (max_strlen + 1));
+    // Allocate memory for argument tokens (count+2 entries)
+    new_argv = malloc(sizeof(char *) * (count + 2));
+    for (int i = 0; i <= count; i++)
+        new_argv[i] = malloc(sizeof(char) * (max_strlen + 1));
 
-    // 커멘트 라인 토크나이즈
+    // Tokenize the command string into new_argv
     ptr = argv[1];
     int i = 0;
     int j = 0;
-    while (*ptr != 0) {
+    while (*ptr != '\0') {
         if (*ptr != ' ') {
-            new_argv[i][j] = *ptr;
-            j++;
+            new_argv[i][j++] = *ptr;
         } else {
-            new_argv[i][j] = 0;
+            new_argv[i][j] = '\0';
             i++;
             j = 0;
         }
         ptr++;
     }
-    new_argv[i][j] = 0;
-    new_argv[i + 1] = 0;
+    new_argv[i][j] = '\0';
+    new_argv[i + 1] = NULL;
 
-    /* create the pipe */
+    // Create a pipe for inter-process communication
     if (pipe(fd) == -1) {
-        fprintf(stderr, "Pipe failed");
+        perror("Pipe creation failed");
         return 1;
     }
 
-    /* now fork a child process */
-    if ((pid = fork()) == 0) { /* child process */
+    // Fork a child process
+    pid = fork();
+    if (pid == 0) {
+        // Child: redirect stdout to pipe and execute command
         close(fd[READ_END]);
-        ret = dup2(fd[WRITE_END], STDOUT_FILENO);  // standard output을 파이프에 연결
+        dup2(fd[WRITE_END], STDOUT_FILENO);
         close(fd[WRITE_END]);
         ret = execvp(new_argv[0], new_argv);
         if (ret < 0) {
             perror("Error: execvp failed");
             exit(EXIT_FAILURE);
         }
-    } else if (pid > 0) { /* parent process */
+    } else if (pid > 0) {
+        // Parent: read from pipe and process output
         close(fd[WRITE_END]);
         wait(NULL);
 
         FILE *fd_read = fdopen(fd[READ_END], "r");
-        int i = 1;
-        int argv2_len = strlen(argv[2]);
+        int line_no = 1;
+        int search_len = strlen(argv[2]);
 
-        while (fgets(read_msg, BUFFER_SIZE, fd_read) != 0) {
-            int flag = 0;
-            int grep_point[256] = {0};
-            int grep_char[1024] = {0};
+        // Read each line from the pipe
+        while (fgets(read_msg, BUFFER_SIZE, fd_read)) {
+            int match_flag = 0;
+            int grep_point[256] = {0};         // Positions for Default match mode
+            int grep_char[BUFFER_SIZE] = {0};  // Positions for flexible mode
             int l = 0;
             int msg_len = strlen(read_msg);
-            if (chr_flag) {
+
+            if (flex_mode) {
+                // Flexible mode: highlight any matching character
                 for (int j = 0; j < msg_len; j++) {
-                    for (int k = 0; k < argv2_len; k++) {
+                    for (int k = 0; k < search_len; k++) {
                         if (read_msg[j] == argv[2][k]) {
-                            flag = 1;
-                            if (l < 1024 - 1) {
+                            match_flag = 1;
+                            if (l < BUFFER_SIZE - 1) {
                                 grep_char[l++] = j;
                                 grep_char[l] = -1;
                                 break;
                             } else {
-                                printf("!Buffer Error 1024\n");
+                                fprintf(stderr, "Buffer overflow in flexible mode\n");
+                                return 1;
                             }
                         }
                     }
                 }
-            } else if (msg_len >= argv2_len) {
-                for (int j = 0; j <= (msg_len - argv2_len); j++) {
-                    for (int k = 0; k < argv2_len; k++) {
-                        if (read_msg[j + k] != argv[2][k]) {
-                            break;
-                        } else if (k == argv2_len - 1) {
-                            flag = 1;
-                            if (l < 256 - 1) {
-                                grep_point[l++] = j;
-                                grep_point[l] = -1;
+            } else {
+                // Default match mode: find substring positions
+                if (msg_len >= search_len) {
+                    for (int j = 0; j <= msg_len - search_len; j++) {
+                        for (int k = 0; k < search_len; k++) {
+                            if (read_msg[j + k] != argv[2][k]) break;
+                            if (k == search_len - 1) {
+                                match_flag = 1;
+                                if (l < 256 - 1) {
+                                    grep_point[l++] = j;
+                                    grep_point[l] = -1;
+                                } else {
+                                    fprintf(stderr, "Buffer overflow in Default mode\n");
+                                    return 1;
+                                }
+                                j += search_len - 1;
                             }
-
-                            j += argv2_len - 1;
                         }
                     }
                 }
             }
-            l = 0;
-            if (chr_flag && flag) {
-                printf("\033[0;32m[%d] \033[0m", i);  // Line number
 
+            // Print highlighted line if a match was found
+            if (match_flag) {
+                printf("\033[0;32m[%d]\033[0m ", line_no);  // Line number in green
+                l = 0;
                 for (int k = 0; k < msg_len; k++) {
-                    if (grep_char[l] != -1 && grep_char[l] == k) {
-                        printf("\033[0;31m%c\033[0m", read_msg[k]);
-                        if (l < 1024 - 1) l++;
+                    if (flex_mode) {
+                        if (grep_char[l] != -1 && grep_char[l] == k) {
+                            printf("\033[0;31m%c\033[0m", read_msg[k]);  // Highlight char red
+                            l++;
+                        } else {
+                            putchar(read_msg[k]);
+                        }
                     } else {
-                        printf("%c", read_msg[k]);
-                    }
-                }
-            } else if (flag && !chr_flag) {
-                // l = 0;
-                printf("\033[0;32m[%d] \033[0m", i);
-
-                for (int k = 0; k < msg_len; k++) {
-                    if (grep_point[l] != -1 && grep_point[l] == k) {
-                        printf("\033[0;31m");
-                    }
-                    printf("%c", read_msg[k]);
-                    if (grep_point[l] != -1 && grep_point[l] + argv2_len - 1 == k) {
-                        printf("\033[0m");
-                        if (l < 256 - 1) l++;
+                        if (grep_point[l] != -1 && grep_point[l] == k)
+                            printf("\033[0;31m");  // Start red highlight
+                        putchar(read_msg[k]);
+                        if (grep_point[l] != -1 && grep_point[l] + search_len - 1 == k) {
+                            printf("\033[0m");  // End red highlight
+                            l++;
+                        }
                     }
                 }
             }
-            i++;
+            line_no++;
         }
-        printf("\033[0m");
+        printf("\033[0m");  // Restore default terminal colors after highlighting
 
-        /* close the READ end of the pipe */
-        for (int i = 0; i <= count; i++) {
-            free(*(new_argv + i));
-        }
-        free(new_argv);
+        // Cleanup
         close(fd[READ_END]);
         fclose(fd_read);
     } else {
-        fprintf(stderr, "Fork failed");
+        perror("Fork failed");
         return 1;
     }
+
+    // Free allocated memory
+    for (int idx = 0; idx <= count; idx++)
+        free(new_argv[idx]);
+    free(new_argv);
 
     return 0;
 }
